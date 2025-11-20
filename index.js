@@ -3,6 +3,7 @@
 
 import express from 'express';
 import crypto from 'crypto';
+import zlib from 'zlib';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -231,7 +232,6 @@ function validateHmac(params, receivedHmac, secret) {
 
 // Decompress base64-encoded gzipped body
 function decompressBody(compressedBase64) {
-  const zlib = require('zlib');
   const compressed = Buffer.from(compressedBase64, 'base64');
   return zlib.gunzipSync(compressed).toString('utf8');
 }
@@ -271,7 +271,7 @@ function isValidUrl(urlString) {
 }
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 GET-to-POST Proxy running on port ${PORT}`);
   console.log(`📝 Health check: http://localhost:${PORT}/health`);
   console.log(`🔐 HMAC validation: ${process.env.HMAC_SECRET ? 'ENABLED' : 'DISABLED'}`);
