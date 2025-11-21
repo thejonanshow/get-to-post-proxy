@@ -1,278 +1,222 @@
-// Universal GET-to-POST Proxy - Railway.app Version
-// Express.js server that translates GET requests to POST/PUT/DELETE/PATCH
-
-import express from 'express';
-import crypto from 'crypto';
-import zlib from 'zlib';
+const express = require(‘express’);
+const crypto = require(‘crypto’);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Rate limiting state (in-memory)
+// Configuration from environment variables
+const HMAC_SECRET = process.env.HMAC_SECRET;
+const RATE_LIMIT_PER_MINUTE = parseInt(process.env.RATE_LIMIT_PER_MINUTE || ‘60’);
+
+// In-memory rate limiting (resets on service restart)
 const rateLimits = new Map();
 
 // Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: ‘10mb’ }));
 
-// CORS
+// CORS middleware
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
-  
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
-});
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'get-to-post-proxy' });
-});
-
-// Main proxy endpoint
-app.get('/proxy', async (req, res) => {
-  try {
-    // Rate limiting
-    const clientIp = req.ip || req.connection.remoteAddress;
-    const rateLimitResult = checkRateLimit(clientIp);
-    
-    if (!rateLimitResult.allowed) {
-      return res.status(429).json({
-        error: 'Rate limit exceeded',
-        retryAfter: rateLimitResult.retryAfter
-      });
-    }
-
-    // Extract parameters
-    const {
-      url: targetUrl,
-      method = 'POST',
-      body,
-      hmac,
-      compressed,
-      ...queryParams
-    } = req.query;
-
-    // Validate required params
-    if (!targetUrl || !hmac) {
-      return res.status(400).json({
-        error: 'Missing required parameters',
-        required: ['url', 'hmac'],
-        optional: ['method', 'body', 'header_*']
-      });
-    }
-
-    // Validate URL
-    if (!isValidUrl(targetUrl)) {
-      return res.status(400).json({
-        error: 'Invalid target URL',
-        hint: 'Must be HTTPS and not a private IP'
-      });
-    }
-
-    // Extract headers from query params
-    const headers = {};
-    for (const [key, value] of Object.entries(queryParams)) {
-      if (key.startsWith('header_')) {
-        const headerName = key
-          .replace('header_', '')
-          .split('_')
-          .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-          .join('-');
-        headers[headerName] = value;
-      }
-    }
-
-    // Ensure Content-Type for requests with body
-    if (body && !headers['Content-Type']) {
-      headers['Content-Type'] = 'application/json';
-    }
-
-    // Validate HMAC
-    const isValidHmac = validateHmac(
-      { targetUrl, method, body, headers },
-      hmac,
-      process.env.HMAC_SECRET
-    );
-
-    if (!isValidHmac) {
-      return res.status(403).json({
-        error: 'Invalid HMAC signature',
-        hint: 'HMAC = HMAC-SHA256(url + method + body + sorted_headers, secret)'
-      });
-    }
-
-    // Decompress body if needed
-    let requestBody = body;
-    if (compressed === 'true' && requestBody) {
-      try {
-        requestBody = decompressBody(requestBody);
-      } catch (error) {
-        return res.status(400).json({
-          error: 'Decompression failed',
-          message: error.message
-        });
-      }
-    }
-
-    // Make the proxied request
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
-
-    try {
-      const response = await fetch(targetUrl, {
-        method: method.toUpperCase(),
-        headers: headers,
-        body: requestBody,
-        signal: controller.signal
-      });
-
-      clearTimeout(timeout);
-
-      const responseText = await response.text();
-
-      // Return proxied response
-      res.status(response.status)
-        .set('Content-Type', response.headers.get('Content-Type') || 'application/json')
-        .set('X-Proxy-Status', 'success')
-        .set('X-Original-Status', response.status.toString())
-        .send(responseText);
-
-    } catch (fetchError) {
-      clearTimeout(timeout);
-      
-      if (fetchError.name === 'AbortError') {
-        return res.status(504).json({
-          error: 'Request timeout',
-          message: 'Target API took longer than 30 seconds'
-        });
-      }
-      
-      throw fetchError;
-    }
-
-  } catch (error) {
-    console.error('Proxy error:', error);
-    res.status(500).json({
-      error: 'Proxy request failed',
-      message: error.message,
-      type: error.name
-    });
-  }
+res.header(‘Access-Control-Allow-Origin’, ‘*’);
+res.header(‘Access-Control-Allow-Methods’, ‘GET, OPTIONS’);
+res.header(‘Access-Control-Allow-Headers’, ‘Content-Type’);
+if (req.method === ‘OPTIONS’) {
+return res.status(200).end();
+}
+next();
 });
 
 // Rate limiting function
-function checkRateLimit(clientId) {
-  const limit = parseInt(process.env.RATE_LIMIT_PER_MINUTE || '60');
-  const now = Date.now();
-  const windowMs = 60000; // 1 minute
+function checkRateLimit(identifier) {
+const now = Date.now();
+const minute = Math.floor(now / 60000);
+const key = `${identifier}:${minute}`;
 
-  const record = rateLimits.get(clientId) || {
-    count: 0,
-    resetAt: now + windowMs
-  };
+const current = rateLimits.get(key) || 0;
 
-  if (now > record.resetAt) {
-    record.count = 1;
-    record.resetAt = now + windowMs;
-  } else {
-    record.count++;
-  }
-
-  rateLimits.set(clientId, record);
-
-  // Cleanup old records every 100 requests
-  if (Math.random() < 0.01) {
-    for (const [key, value] of rateLimits.entries()) {
-      if (now > value.resetAt + windowMs) {
-        rateLimits.delete(key);
-      }
-    }
-  }
-
-  if (record.count > limit) {
-    return {
-      allowed: false,
-      retryAfter: Math.ceil((record.resetAt - now) / 1000)
-    };
-  }
-
-  return { allowed: true };
+if (current >= RATE_LIMIT_PER_MINUTE) {
+return { allowed: false, retryAfter: 60 - Math.floor((now % 60000) / 1000) };
 }
 
-// Validate HMAC
-function validateHmac(params, receivedHmac, secret) {
-  if (!secret) {
-    throw new Error('HMAC_SECRET not configured');
+rateLimits.set(key, current + 1);
+
+// Cleanup old entries periodically
+if (rateLimits.size > 10000) {
+const oldKeys = Array.from(rateLimits.keys()).slice(0, 5000);
+oldKeys.forEach(k => rateLimits.delete(k));
+}
+
+return { allowed: true };
+}
+
+// HMAC generation
+function generateHmac(message, secret) {
+return crypto.createHmac(‘sha256’, secret).update(message).digest(‘hex’);
+}
+
+// Constant-time comparison to prevent timing attacks
+function constantTimeCompare(a, b) {
+if (a.length !== b.length) return false;
+let result = 0;
+for (let i = 0; i < a.length; i++) {
+result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+}
+return result === 0;
+}
+
+// SSRF protection - block private IP ranges
+function isPrivateIP(hostname) {
+const privateRanges = [
+/^127./,
+/^10./,
+/^172.(1[6-9]|2[0-9]|3[0-1])./,
+/^192.168./,
+/^169.254./,
+/^::1$/,
+/^fe80:/i,
+/^fc00:/i,
+/^fd00:/i
+];
+return privateRanges.some(range => range.test(hostname));
+}
+
+// Health check endpoint
+app.get(’/health’, (req, res) => {
+res.json({
+status: ‘ok’,
+timestamp: new Date().toISOString(),
+hmacConfigured: !!HMAC_SECRET
+});
+});
+
+// Main proxy endpoint
+app.get(’/’, async (req, res) => {
+try {
+// Extract parameters
+const targetUrl = req.query.url;
+const method = (req.query.method || ‘POST’).toUpperCase();
+const body = req.query.body || ‘’;
+const hmac = req.query.hmac;
+
+```
+// Validate required parameters
+if (!targetUrl) {
+  return res.status(400).json({ error: 'Missing required parameter: url' });
+}
+
+if (!hmac) {
+  return res.status(400).json({ error: 'Missing required parameter: hmac' });
+}
+
+// Validate HMAC_SECRET is configured
+if (!HMAC_SECRET) {
+  return res.status(500).json({ error: 'Server misconfigured: HMAC_SECRET not set' });
+}
+
+// Rate limiting
+const clientIP = req.headers['x-forwarded-for']?.split(',')[0] || req.connection.remoteAddress;
+const rateLimitCheck = checkRateLimit(clientIP);
+if (!rateLimitCheck.allowed) {
+  return res.status(429).json({
+    error: 'Rate limit exceeded',
+    retryAfter: rateLimitCheck.retryAfter
+  });
+}
+
+// Parse URL for SSRF protection
+let urlObj;
+try {
+  urlObj = new URL(targetUrl);
+} catch (e) {
+  return res.status(400).json({ error: 'Invalid target URL' });
+}
+
+// SSRF protection
+if (urlObj.protocol !== 'https:' && urlObj.hostname !== 'localhost') {
+  return res.status(400).json({ error: 'Only HTTPS URLs allowed (except localhost for testing)' });
+}
+
+if (isPrivateIP(urlObj.hostname)) {
+  return res.status(403).json({ error: 'Private IP addresses are not allowed' });
+}
+
+// Extract headers from query parameters
+const headers = {};
+for (const [key, value] of Object.entries(req.query)) {
+  if (key.startsWith('header_')) {
+    const headerName = key.replace('header_', '');
+    headers[headerName] = value;
   }
-
-  // Build message: url + method + body + sorted headers
-  const headerString = Object.keys(params.headers)
-    .sort()
-    .map(key => `${key}:${params.headers[key]}`)
-    .join('|');
-
-  const message = `${params.targetUrl}${params.method}${params.body || ''}${headerString}`;
-
-  // Generate HMAC
-  const hmac = crypto
-    .createHmac('sha256', secret)
-    .update(message)
-    .digest('hex');
-
-  // Constant-time comparison
-  return crypto.timingSafeEqual(
-    Buffer.from(receivedHmac),
-    Buffer.from(hmac)
-  );
 }
 
-// Decompress base64-encoded gzipped body
-function decompressBody(compressedBase64) {
-  const compressed = Buffer.from(compressedBase64, 'base64');
-  return zlib.gunzipSync(compressed).toString('utf8');
+// Build HMAC message (must match client-side calculation)
+const sortedHeaders = Object.keys(headers)
+  .sort()
+  .map(k => `${k}:${headers[k]}`)
+  .join('|');
+
+const messageToSign = `${targetUrl}${method}${body}${sortedHeaders}`;
+const expectedHmac = generateHmac(messageToSign, HMAC_SECRET);
+
+// Constant-time HMAC comparison
+if (!constantTimeCompare(hmac, expectedHmac)) {
+  return res.status(403).json({ error: 'Invalid HMAC signature' });
 }
 
-// Validate URL
-function isValidUrl(urlString) {
-  try {
-    const url = new URL(urlString);
+// Make the proxied request with timeout
+const controller = new AbortController();
+const timeout = setTimeout(() => controller.abort(), 30000); // 30 second timeout
 
-    // Only allow HTTPS
-    if (url.protocol !== 'https:') {
-      return false;
-    }
-
-    // Block private IPs (SSRF protection)
-    const hostname = url.hostname;
-    const privatePatterns = [
-      /^localhost$/i,
-      /^127\./,
-      /^192\.168\./,
-      /^10\./,
-      /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
-      /^0\.0\.0\.0$/,
-      /^::1$/
-    ];
-
-    for (const pattern of privatePatterns) {
-      if (pattern.test(hostname)) {
-        return false;
-      }
-    }
-
-    return true;
-  } catch {
-    return false;
+try {
+  const response = await fetch(targetUrl, {
+    method: method,
+    headers: {
+      ...headers,
+      'User-Agent': 'Omnibot-Proxy/1.0'
+    },
+    body: method !== 'GET' && method !== 'HEAD' && body ? body : undefined,
+    signal: controller.signal
+  });
+  
+  clearTimeout(timeout);
+  
+  // Get response body
+  const responseText = await response.text();
+  
+  // Return proxied response
+  res.status(response.status).json({
+    success: response.ok,
+    status: response.status,
+    statusText: response.statusText,
+    body: responseText,
+    headers: Object.fromEntries(response.headers.entries())
+  });
+  
+} catch (fetchError) {
+  clearTimeout(timeout);
+  
+  if (fetchError.name === 'AbortError') {
+    return res.status(504).json({ error: 'Request timeout (30s limit)' });
   }
+  
+  return res.status(502).json({
+    error: 'Proxy request failed',
+    details: fetchError.message
+  });
 }
+```
+
+} catch (error) {
+console.error(‘Proxy error:’, error);
+res.status(500).json({
+error: ‘Internal server error’,
+details: error.message
+});
+}
+});
 
 // Start server
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 GET-to-POST Proxy running on port ${PORT}`);
-  console.log(`📝 Health check: http://localhost:${PORT}/health`);
-  console.log(`🔐 HMAC validation: ${process.env.HMAC_SECRET ? 'ENABLED' : 'DISABLED'}`);
+app.listen(PORT, () => {
+console.log(`Omnibot GET-to-POST Proxy listening on port ${PORT}`);
+console.log(`Rate limit: ${RATE_LIMIT_PER_MINUTE} requests per minute`);
+console.log(`HMAC Secret configured: ${HMAC_SECRET ? 'Yes ✓' : 'No ✗'}`);
 });
