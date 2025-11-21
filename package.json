@@ -1,1 +1,6 @@
-{‘name’:‘omnibot-proxy’,‘version’:‘1.0.0’,‘description’:‘Universal GET-to-POST proxy with HMAC authentication for Omnibot’,‘main’:‘index.js’,‘scripts’:{‘start’:‘node index.js’,‘dev’:‘node index.js’},‘engines’:{‘node’:’>=18.0.0’},‘dependencies’:{‘express’:’^4.18.2’},‘keywords’:[‘proxy’,‘api’,‘hmac’,‘omnibot’],‘author’:‘Jonan’,‘license’:‘MIT’}
+{"name":"omnibot-proxy","version":"1.0.0","description":"Universal GET-to-POST proxy with HMAC authentication for Omnibot","main":"index.js","scripts": {"start":"node index.js","dev":"node index.js"
+    },"engines": {"node":">=18.0.0"
+    },"dependencies": {"express":"^4.18.2"
+    },"keywords": ["proxy","api","hmac","omnibot"
+    ],"author":"Jonan","license":"MIT"
+}
