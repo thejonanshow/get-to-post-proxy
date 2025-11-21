@@ -1,23 +1,24 @@
 {
-  "name": "get-to-post-proxy",
-  "version": "1.0.0",
-  "description": "Universal GET-to-POST proxy with HMAC authentication",
-  "main": "index.js",
-  "type": "module",
-  "scripts": {
-    "start": "node index.js"
-  },
-  "keywords": [
-    "proxy",
-    "hmac",
-    "api"
-  ],
-  "author": "",
-  "license": "MIT",
-  "dependencies": {
-    "express": "^4.18.2"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  }
+“name”: “omnibot-proxy”,
+“version”: “1.0.0”,
+“description”: “Universal GET-to-POST proxy with HMAC authentication for Omnibot”,
+“main”: “index.js”,
+“scripts”: {
+“start”: “node index.js”,
+“dev”: “node index.js”
+},
+“engines”: {
+“node”: “>=18.0.0”
+},
+“dependencies”: {
+“express”: “^4.18.2”
+},
+“keywords”: [
+“proxy”,
+“api”,
+“hmac”,
+“omnibot”
+],
+“author”: “Jonan”,
+“license”: “MIT”
 }
