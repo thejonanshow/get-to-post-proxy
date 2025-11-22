@@ -144,7 +144,7 @@ return res.status(403).json({ error: 'Invalid HMAC' });
 
 sessions.delete(sid);
 
-const clientIP = req.headers['x-forwarded-for']?.split(',')[0] || req.connection.remoteAddress;
+const clientIP = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
 const rateCheck = checkRateLimit(clientIP);
 if (!rateCheck.allowed) {
 return res.status(429).json({ error: 'Rate limit exceeded', retryAfter: rateCheck.retryAfter });
