@@ -125,13 +125,6 @@ const name = k === 'h1' ? 'Authorization' : k === 'h2' ? 'Content-Type' : k;
 headers[name] = config.headers[k];
 });
 
-// Auto-inject GitHub token for GitHub API requests
-if (GITHUB_TOKEN && targetUrl.includes('api.github.com')) {
-headers['Authorization'] = `Bearer ${GITHUB_TOKEN}`;
-headers['Accept'] = headers['Accept'] || 'application/vnd.github+json';
-headers['X-GitHub-Api-Version'] = headers['X-GitHub-Api-Version'] || '2022-11-28';
-}
-
 if (!HMAC_SECRET) return res.status(500).json({ error: 'HMAC not configured' });
 
 const sortedHeaders = Object.keys(headers).sort().map(k => `${k}:${headers[k]}`).join('|');
@@ -155,6 +148,13 @@ try {
 urlObj = new URL(targetUrl);
 } catch (e) {
 return res.status(400).json({ error: 'Invalid URL' });
+}
+
+// Auto-inject GitHub token for GitHub API requests (after URL parsing)
+if (GITHUB_TOKEN && urlObj.hostname === 'api.github.com') {
+headers['Authorization'] = `Bearer ${GITHUB_TOKEN}`;
+headers['Accept'] = headers['Accept'] || 'application/vnd.github+json';
+headers['X-GitHub-Api-Version'] = headers['X-GitHub-Api-Version'] || '2022-11-28';
 }
 
 if (urlObj.protocol !== 'https:' && urlObj.hostname !== 'localhost') {
@@ -193,6 +193,12 @@ return res.status(502).json({ error: 'Proxy failed', details: fetchError.message
 });
 
 app.get('/', (req, res) => {
+const clientIP = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
+const rateCheck = checkRateLimit(clientIP);
+if (!rateCheck.allowed) {
+return res.status(429).json({ error: 'Rate limit exceeded', retryAfter: rateCheck.retryAfter });
+}
+
 if (Object.keys(req.query).length === 0) {
 const indexPath = path.join(__dirname, 'index.html');
 if (fs.existsSync(indexPath)) {
