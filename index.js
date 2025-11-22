@@ -33,7 +33,7 @@ return { allowed: false, retryAfter: 60 - Math.floor((now % 60000) / 1000) };
 rateLimits.set(key, current + 1);
 // Clean up expired entries (older than 2 minutes)
 if (rateLimits.size > 10000) {
-for (const [k] of rateLimits.entries()) {
+for (const k of rateLimits.keys()) {
   const [, keyMinute] = k.split(':');
   if (minute - parseInt(keyMinute) > 1) {
     rateLimits.delete(k);
